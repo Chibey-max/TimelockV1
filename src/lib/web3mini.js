@@ -115,11 +115,9 @@ async function sendTx(
   value = "0x0",
   gasKey = "deposit",
 ) {
-  // Dry-run first to catch contract reverts before spending any gas
-  await dryRun(from, to, sel, params, value);
-
   // Send transaction WITHOUT gas field - let wallet estimate natively
   // This prevents false "insufficient funds" errors on Sepolia
+  // Note: Removed dryRun eth_call as it can cause issues on some RPCs
   return rpc("eth_sendTransaction", [
     {
       from,
