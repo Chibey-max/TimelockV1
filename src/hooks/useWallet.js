@@ -45,18 +45,21 @@ export function useWallet() {
     }
     setIsConnecting(true);
     setError("");
+
     try {
-      const accounts = await prov.request({ method: "eth_requestAccounts" });
+      // Step 1: Check current chain and switch to Sepolia FIRST before any other operations
       let chain = parseInt(await prov.request({ method: "eth_chainId" }), 16);
 
       if (chain !== SEPOLIA_CHAIN_ID) {
         try {
+          // Try to switch to Sepolia
           await prov.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: "0xaa36a7" }],
           });
           chain = SEPOLIA_CHAIN_ID;
         } catch (switchErr) {
+          // Chain not added - add it automatically
           if (switchErr.code === 4902) {
             await prov.request({
               method: "wallet_addEthereumChain",
@@ -71,8 +74,22 @@ export function useWallet() {
               ],
             });
             chain = SEPOLIA_CHAIN_ID;
+          } else {
+            // Rethrow if it's not a chain-not-added error
+            throw switchErr;
           }
         }
+      }
+
+      // Step 2: Now request accounts after network is correct
+      const accounts = await prov.request({ method: "eth_requestAccounts" });
+
+      // Step 3: Verify chain one more time after account request (wallet might have changed it)
+      chain = parseInt(await prov.request({ method: "eth_chainId" }), 16);
+      if (chain !== SEPOLIA_CHAIN_ID) {
+        setError("Please switch to Sepolia to use this app");
+        setIsConnecting(false);
+        return;
       }
 
       setProvider(prov);

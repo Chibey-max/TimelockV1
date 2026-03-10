@@ -85,15 +85,12 @@ function extractRevertReason(err) {
   return null; // no known reason — let caller decide
 }
 
-// ── Gas: use a fixed safe limit, skip estimation entirely ──
-// Why? eth_estimateGas on Sepolia with a payable function requires
-// the simulation to have the exact ETH value available, which causes
-// false "insufficient funds" errors even when the user has enough.
-// Fixed limits are safe because unspent gas is always fully refunded.
+// Gas constants kept for reference only - do NOT send in transactions
+// Let wallet calculate gas natively to avoid false insufficient funds errors
 const GAS_LIMITS = {
-  deposit: "0x27100", // 160,000 — covers loop over existing vaults
-  withdraw: "0x186A0", // 100,000 — simple single vault withdrawal
-  withdrawAll: "0x30D40", // 200,000 — covers loop over all vaults
+  deposit: "0x27100", // 160,000
+  withdraw: "0x186A0", // 100,000
+  withdrawAll: "0x30D40", // 200,000
 };
 
 // Before sending, do a dry-run eth_call to catch reverts with zero gas cost
@@ -121,13 +118,14 @@ async function sendTx(
   // Dry-run first to catch contract reverts before spending any gas
   await dryRun(from, to, sel, params, value);
 
+  // Send transaction WITHOUT gas field - let wallet estimate natively
+  // This prevents false "insufficient funds" errors on Sepolia
   return rpc("eth_sendTransaction", [
     {
       from,
       to,
       data: "0x" + sel + params,
       value,
-      gas: GAS_LIMITS[gasKey],
     },
   ]);
 }

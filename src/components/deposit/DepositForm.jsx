@@ -124,6 +124,25 @@ export default function DepositForm({ wallet, onSuccess, toast }) {
     );
   }
 
+  // Block deposit if wrong network
+  if (wallet.isWrongNet) {
+    return (
+      <div className="card">
+        <div className="card-title">New Deposit</div>
+        <div className="connect-prompt">
+          <div className="connect-icon">⚠️</div>
+          <div className="connect-title">Wrong Network</div>
+          <div className="connect-sub">
+            This app runs on Sepolia Testnet. Please switch network to continue.
+          </div>
+          <button className="btn btn-primary" onClick={wallet.switchNetwork}>
+            Switch to Sepolia
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       <div className="card">
