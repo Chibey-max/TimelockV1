@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import WalletModal from "@/components/ui/Modal";
+import WalletModal from "@/components/ui/WalletModal";
 
 export default function Header({ wallet }) {
   const [theme, setTheme] = useState("dark");
