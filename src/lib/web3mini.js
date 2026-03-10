@@ -63,74 +63,71 @@ const ethCall = (to, sel, params = "") =>
   rpc("eth_call", [{ to, data: "0x" + sel + params }, "latest"]);
 
 // ── Revert reason extractor ──
-function extractRevertReason(msg) {
-  const patterns = [
-    /execution reverted: (.+)/i,
-    /reverted with reason string '(.+)'/i,
-    /revert (.+)/i,
-  ];
-  for (const p of patterns) {
-    const m = msg.match(p);
-    if (m) return m[1].trim();
-  }
+function extractRevertReason(err) {
+  const msg =
+    err?.data?.message || err?.data?.data || err?.message || String(err);
   if (msg.includes("Vault already active"))
-    return "You already have an active vault";
-  if (msg.includes("Funds are locked")) return "Vault is still locked";
-  if (msg.includes("No active vault")) return "No active vault found";
-  if (msg.includes("Invalid unlock time")) return "Invalid unlock time";
-  if (msg.includes("Must send ETH")) return "Amount must be greater than 0";
+    return "You already have an active vault. Withdraw it first.";
+  if (msg.includes("Funds are locked"))
+    return "Vault is still locked — unlock time not reached yet.";
+  if (msg.includes("No active vault")) return "No active vault found.";
+  if (msg.includes("Invalid unlock time"))
+    return "Invalid unlock time — must be between now and 1 year.";
+  if (msg.includes("Must send ETH")) return "Amount must be greater than 0.";
   if (msg.includes("Nothing to withdraw"))
-    return "No unlocked vaults to withdraw";
-  return msg.slice(0, 120) || "Transaction would fail";
+    return "No unlocked vaults to withdraw.";
+  if (msg.includes("Invalid vault ID")) return "Invalid vault ID.";
+  // Generic revert
+  const m =
+    msg.match(/execution reverted: (.+)/i) ||
+    msg.match(/reverted with reason string '(.+)'/i);
+  if (m) return m[1].trim();
+  return null; // no known reason — let caller decide
 }
 
-// ── Gas estimation ──
-// Uses a flat 20% buffer — enough for Sepolia without inflating the
-// "estimated cost" that wallets show to users, which was causing the
-// "not enough ETH for fees" error despite having sufficient balance.
-async function estimateGas(from, to, sel, params, value = "0x0") {
+// ── Gas: use a fixed safe limit, skip estimation entirely ──
+// Why? eth_estimateGas on Sepolia with a payable function requires
+// the simulation to have the exact ETH value available, which causes
+// false "insufficient funds" errors even when the user has enough.
+// Fixed limits are safe because unspent gas is always fully refunded.
+const GAS_LIMITS = {
+  deposit: "0x27100", // 160,000 — covers loop over existing vaults
+  withdraw: "0x186A0", // 100,000 — simple single vault withdrawal
+  withdrawAll: "0x30D40", // 200,000 — covers loop over all vaults
+};
+
+// Before sending, do a dry-run eth_call to catch reverts with zero gas cost
+async function dryRun(from, to, sel, params, value = "0x0") {
   try {
-    const raw = await rpc("eth_estimateGas", [
-      {
-        from,
-        to,
-        data: "0x" + sel + params,
-        value,
-      },
+    await rpc("eth_call", [
+      { from, to, data: "0x" + sel + params, value },
+      "latest",
     ]);
-    const estimated = BigInt(raw);
-    // +20% buffer — enough safety margin without over-inflating cost
-    const buffered = estimated + (estimated * 20n) / 100n;
-    // Hard cap at 300,000 — no vault operation should ever need more
-    const capped = buffered > 300000n ? 300000n : buffered;
-    return "0x" + capped.toString(16);
   } catch (err) {
-    const msg = err?.data?.message || err?.message || "";
-    // If the node says it will revert, surface the reason immediately
-    // so the user sees a clear message and NO gas is wasted
-    if (
-      msg.includes("revert") ||
-      msg.includes("execution") ||
-      err?.code === -32603 ||
-      err?.code === 3
-    ) {
-      throw new Error(extractRevertReason(msg));
-    }
-    // Non-revert failure (network issue etc.) — use safe fallback
-    console.warn("Gas estimation failed, using fallback:", msg);
-    return "0x30D40"; // 200,000
+    const reason = extractRevertReason(err);
+    if (reason) throw new Error(reason);
+    // eth_call can fail for non-revert reasons (e.g. node quirks) — ignore those
   }
 }
 
-async function sendTx(from, to, sel, params = "", value = "0x0") {
-  const gas = await estimateGas(from, to, sel, params, value);
+async function sendTx(
+  from,
+  to,
+  sel,
+  params = "",
+  value = "0x0",
+  gasKey = "deposit",
+) {
+  // Dry-run first to catch contract reverts before spending any gas
+  await dryRun(from, to, sel, params, value);
+
   return rpc("eth_sendTransaction", [
     {
       from,
       to,
       data: "0x" + sel + params,
       value,
-      gas,
+      gas: GAS_LIMITS[gasKey],
     },
   ]);
 }
@@ -183,13 +180,21 @@ export async function deposit(from, contract, unlockTimeSec, weiAmount) {
     SEL.deposit,
     encUint(unlockTimeSec),
     "0x" + weiAmount.toString(16),
+    "deposit",
   );
 }
 export async function withdraw(from, contract, vaultId) {
-  return sendTx(from, contract, SEL.withdraw, encUint(vaultId));
+  return sendTx(
+    from,
+    contract,
+    SEL.withdraw,
+    encUint(vaultId),
+    "0x0",
+    "withdraw",
+  );
 }
 export async function withdrawAll(from, contract) {
-  return sendTx(from, contract, SEL.withdrawAll, "");
+  return sendTx(from, contract, SEL.withdrawAll, "", "0x0", "withdrawAll");
 }
 
 // ── Reads ──
