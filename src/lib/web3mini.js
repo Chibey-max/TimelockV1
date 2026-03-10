@@ -1,7 +1,7 @@
 /**
  * web3mini.js — Zero-dependency Web3 helper.
  * Supports ANY EVM wallet via window.__activeProvider.
- * Selectors verified: keccak256("transfer(address,uint256)") = a9059cbb ✅
+ * Selectors verified: keccak256("transfer(address,uint256)") = a9059cbb 
  */
 
 const SEL = {
@@ -115,15 +115,16 @@ async function sendTx(
   value = "0x0",
   gasKey = "deposit",
 ) {
-  // Send transaction WITHOUT gas field - let wallet estimate natively
+  // Send transaction with much higher gas limit (1.5M) to allow proper estimation
+  // MetaMask will use this as upper bound and adjust based on simulation
   // This prevents false "insufficient funds" errors on Sepolia
-  // Note: Removed dryRun eth_call as it can cause issues on some RPCs
   return rpc("eth_sendTransaction", [
     {
       from,
       to,
       data: "0x" + sel + params,
       value,
+      gas: "0x16E360", // 1,500,000 - high limit lets wallet estimate properly
     },
   ]);
 }
