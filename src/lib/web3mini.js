@@ -1,19 +1,30 @@
 /**
- * web3mini.js — Zero-dependency Web3 helper using window.ethereum.
- * Selectors verified via correct Keccak-256:
- *   keccak256("transfer(address,uint256)") = a9059cbb ✅
+ * web3mini.js — Zero-dependency Web3 helper.
+ *
+ * Supports ANY EVM wallet (MetaMask, Rabby, Coinbase, Brave, etc.)
+ * via window.__activeProvider set by useWallet on connect.
+ *
+ * Selectors verified via Python keccak256:
+ *   keccak256("") = c5d2460186f7...  ✅
+ *   keccak256("transfer(address,uint256)") = a9059cbb  ✅
  */
 
+// ── Verified function selectors ──
 const SEL = {
-  deposit: "b6b55f25",
-  withdraw: "2e1a7d4d",
-  withdrawAll: "853828b6",
-  getVaultCount: "77e1296e",
-  getVault: "d99d13f5",
-  getActiveVaults: "57c57f72",
-  getTotalBalance: "d3d38193",
-  getUnlockedBalance: "129de5bf",
+  deposit: "b6b55f25", // deposit(uint256)
+  withdraw: "2e1a7d4d", // withdraw(uint256)
+  withdrawAll: "853828b6", // withdrawAll()
+  getVaultCount: "77e1296e", // getVaultCount(address)
+  getVault: "d99d13f5", // getVault(address,uint256)
+  getActiveVaults: "57c57f72", // getActiveVaults(address)
+  getTotalBalance: "d3d38193", // getTotalBalance(address)
+  getUnlockedBalance: "129de5bf", // getUnlockedBalance(address)
 };
+
+// ── Use whichever wallet the user connected ──
+function prov() {
+  return window.__activeProvider || window.ethereum;
+}
 
 // ── ABI encoding ──
 const strip0x = (s) => s.replace(/^0x/i, "");
@@ -53,16 +64,18 @@ export function formatGwei(wei) {
 }
 
 // ── RPC ──
-const rpc = (method, params = []) =>
-  window.ethereum.request({ method, params });
+const rpc = (method, params = []) => prov().request({ method, params });
 
 const ethCall = (to, sel, params = "") =>
   rpc("eth_call", [{ to, data: "0x" + sel + params }, "latest"]);
 
-// Estimate gas then add 30% buffer to prevent out-of-gas failures
+// ── Gas estimation with 40% buffer ──
+// Why 40%? Solidity loops (used in getActiveVaults, withdrawAll) have
+// unpredictable gas costs based on array length. 40% covers edge cases
+// without being wasteful. Unspent gas is always refunded.
 async function estimateGas(from, to, sel, params, value = "0x0") {
   try {
-    const estimated = await rpc("eth_estimateGas", [
+    const raw = await rpc("eth_estimateGas", [
       {
         from,
         to,
@@ -70,14 +83,42 @@ async function estimateGas(from, to, sel, params, value = "0x0") {
         value,
       },
     ]);
-    // Add 30% buffer on top of estimate
-    const buffered = BigInt(Math.ceil(Number(BigInt(estimated)) * 1.3));
+    const estimated = BigInt(raw);
+    const buffered = estimated + (estimated * 40n) / 100n; // +40%
     return "0x" + buffered.toString(16);
-  } catch (e) {
-    // If estimation fails, use a safe fallback for this contract
-    console.warn("Gas estimation failed, using fallback:", e.message);
-    return "0x30D40"; // 200,000 — covers all vault operations comfortably
+  } catch (err) {
+    // Estimation reverted = tx will fail for a real reason (e.g. "Vault already active")
+    // Re-throw so the UI can show the actual error message to the user
+    const msg = err?.data?.message || err?.message || "";
+    if (msg.includes("revert") || msg.includes("execution")) {
+      throw new Error(extractRevertReason(msg));
+    }
+    // Non-revert estimation failure: use a safe fallback
+    console.warn("Gas estimation failed, using fallback:", msg);
+    return "0x30D40"; // 200,000 — safely covers all vault operations
   }
+}
+
+// Pull the human-readable reason out of a revert message
+function extractRevertReason(msg) {
+  const patterns = [
+    /execution reverted: (.+)/i,
+    /revert (.+)/i,
+    /reverted with reason string '(.+)'/i,
+  ];
+  for (const p of patterns) {
+    const m = msg.match(p);
+    if (m) return m[1].trim();
+  }
+  if (msg.includes("Vault already active"))
+    return "You already have an active vault";
+  if (msg.includes("Funds are locked"))
+    return "Vault is still locked — unlock time not reached";
+  if (msg.includes("No active vault")) return "No active vault found";
+  if (msg.includes("Invalid unlock time"))
+    return "Unlock time must be between now and 1 year from now";
+  if (msg.includes("Must send ETH")) return "Amount must be greater than 0";
+  return msg.slice(0, 120) || "Transaction would fail — check your inputs";
 }
 
 async function sendTx(from, to, sel, params = "", value = "0x0") {
@@ -93,6 +134,7 @@ async function sendTx(from, to, sel, params = "", value = "0x0") {
   ]);
 }
 
+// ── Account / chain ──
 export const requestAccounts = () => rpc("eth_requestAccounts");
 export const getAccounts = () => rpc("eth_accounts");
 export const getChainId = async () => parseInt(await rpc("eth_chainId"), 16);
@@ -100,13 +142,12 @@ export const getBlockNumber = async () =>
   parseInt(await rpc("eth_blockNumber"), 16);
 export const getGasPrice = async () => BigInt(await rpc("eth_gasPrice"));
 
-// Switch MetaMask to Sepolia automatically if on wrong network
+// ── Network switching ──
 export async function switchToSepolia() {
   try {
-    await rpc("wallet_switchEthereumChain", [{ chainId: "0xaa36a7" }]); // 11155111
+    await rpc("wallet_switchEthereumChain", [{ chainId: "0xaa36a7" }]);
   } catch (err) {
     if (err.code === 4902) {
-      // Chain not added yet — add it
       await rpc("wallet_addEthereumChain", [
         {
           chainId: "0xaa36a7",
@@ -116,25 +157,24 @@ export async function switchToSepolia() {
           blockExplorerUrls: ["https://sepolia.etherscan.io"],
         },
       ]);
-    } else {
-      throw err;
-    }
+    } else throw err;
   }
 }
 
+// ── Wait for tx confirmation ──
 export async function waitForReceipt(txHash, maxAttempts = 60) {
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((r) => setTimeout(r, 2000));
     const receipt = await rpc("eth_getTransactionReceipt", [txHash]);
     if (receipt) {
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, 3000)); // let node state settle
       return receipt;
     }
   }
-  throw new Error("Transaction timed out");
+  throw new Error("Transaction timed out after 2 minutes");
 }
 
-// ── Writes ──
+// ── Write methods ──
 export async function deposit(from, contract, unlockTimeSec, weiAmount) {
   return sendTx(
     from,
@@ -151,7 +191,7 @@ export async function withdrawAll(from, contract) {
   return sendTx(from, contract, SEL.withdrawAll, "");
 }
 
-// ── Reads ──
+// ── Read methods ──
 export async function getActiveVaults(contract, userAddr) {
   const raw = await ethCall(contract, SEL.getActiveVaults, encAddr(userAddr));
   if (!raw || raw === "0x" || /^0x0*$/.test(raw)) return [[], [], []];
