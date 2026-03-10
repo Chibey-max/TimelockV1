@@ -1,19 +1,18 @@
 /**
  * web3mini.js — Zero-dependency Web3 helper using window.ethereum.
- * Selectors verified via correct Keccak-256 against known test vectors:
- *   keccak256("") = c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470 ✅
+ * Selectors verified via correct Keccak-256:
  *   keccak256("transfer(address,uint256)") = a9059cbb ✅
  */
 
 const SEL = {
-  deposit: "b6b55f25", // deposit(uint256)
-  withdraw: "2e1a7d4d", // withdraw(uint256)
-  withdrawAll: "853828b6", // withdrawAll()
-  getVaultCount: "77e1296e", // getVaultCount(address)
-  getVault: "d99d13f5", // getVault(address,uint256)
-  getActiveVaults: "57c57f72", // getActiveVaults(address)
-  getTotalBalance: "d3d38193", // getTotalBalance(address)
-  getUnlockedBalance: "129de5bf", // getUnlockedBalance(address)
+  deposit: "b6b55f25",
+  withdraw: "2e1a7d4d",
+  withdrawAll: "853828b6",
+  getVaultCount: "77e1296e",
+  getVault: "d99d13f5",
+  getActiveVaults: "57c57f72",
+  getTotalBalance: "d3d38193",
+  getUnlockedBalance: "129de5bf",
 };
 
 // ── ABI encoding ──
@@ -56,10 +55,43 @@ export function formatGwei(wei) {
 // ── RPC ──
 const rpc = (method, params = []) =>
   window.ethereum.request({ method, params });
+
 const ethCall = (to, sel, params = "") =>
   rpc("eth_call", [{ to, data: "0x" + sel + params }, "latest"]);
-const sendTx = (from, to, sel, params = "", value = "0x0") =>
-  rpc("eth_sendTransaction", [{ from, to, data: "0x" + sel + params, value }]);
+
+// Estimate gas then add 30% buffer to prevent out-of-gas failures
+async function estimateGas(from, to, sel, params, value = "0x0") {
+  try {
+    const estimated = await rpc("eth_estimateGas", [
+      {
+        from,
+        to,
+        data: "0x" + sel + params,
+        value,
+      },
+    ]);
+    // Add 30% buffer on top of estimate
+    const buffered = BigInt(Math.ceil(Number(BigInt(estimated)) * 1.3));
+    return "0x" + buffered.toString(16);
+  } catch (e) {
+    // If estimation fails, use a safe fallback for this contract
+    console.warn("Gas estimation failed, using fallback:", e.message);
+    return "0x30D40"; // 200,000 — covers all vault operations comfortably
+  }
+}
+
+async function sendTx(from, to, sel, params = "", value = "0x0") {
+  const gas = await estimateGas(from, to, sel, params, value);
+  return rpc("eth_sendTransaction", [
+    {
+      from,
+      to,
+      data: "0x" + sel + params,
+      value,
+      gas,
+    },
+  ]);
+}
 
 export const requestAccounts = () => rpc("eth_requestAccounts");
 export const getAccounts = () => rpc("eth_accounts");
@@ -67,6 +99,28 @@ export const getChainId = async () => parseInt(await rpc("eth_chainId"), 16);
 export const getBlockNumber = async () =>
   parseInt(await rpc("eth_blockNumber"), 16);
 export const getGasPrice = async () => BigInt(await rpc("eth_gasPrice"));
+
+// Switch MetaMask to Sepolia automatically if on wrong network
+export async function switchToSepolia() {
+  try {
+    await rpc("wallet_switchEthereumChain", [{ chainId: "0xaa36a7" }]); // 11155111
+  } catch (err) {
+    if (err.code === 4902) {
+      // Chain not added yet — add it
+      await rpc("wallet_addEthereumChain", [
+        {
+          chainId: "0xaa36a7",
+          chainName: "Sepolia Testnet",
+          nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
+          rpcUrls: ["https://rpc.sepolia.org"],
+          blockExplorerUrls: ["https://sepolia.etherscan.io"],
+        },
+      ]);
+    } else {
+      throw err;
+    }
+  }
+}
 
 export async function waitForReceipt(txHash, maxAttempts = 60) {
   for (let i = 0; i < maxAttempts; i++) {
@@ -81,7 +135,7 @@ export async function waitForReceipt(txHash, maxAttempts = 60) {
 }
 
 // ── Writes ──
-export function deposit(from, contract, unlockTimeSec, weiAmount) {
+export async function deposit(from, contract, unlockTimeSec, weiAmount) {
   return sendTx(
     from,
     contract,
@@ -90,10 +144,10 @@ export function deposit(from, contract, unlockTimeSec, weiAmount) {
     "0x" + weiAmount.toString(16),
   );
 }
-export function withdraw(from, contract, vaultId) {
+export async function withdraw(from, contract, vaultId) {
   return sendTx(from, contract, SEL.withdraw, encUint(vaultId));
 }
-export function withdrawAll(from, contract) {
+export async function withdrawAll(from, contract) {
   return sendTx(from, contract, SEL.withdrawAll, "");
 }
 
