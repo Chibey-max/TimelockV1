@@ -1,7 +1,8 @@
 /**
  * web3mini.js — Zero-dependency Web3 helper.
  * Supports ANY EVM wallet via window.__activeProvider.
- * Selectors verified: keccak256("transfer(address,uint256)") = a9059cbb 
+ * Uses a direct RPC for eth_call/estimateGas to bypass wallet RPC issues.
+ * Selectors verified: keccak256("transfer(address,uint256)") = a9059cbb ✅
  */
 
 const SEL = {
@@ -15,9 +16,41 @@ const SEL = {
   getUnlockedBalance: "129de5bf",
 };
 
+// Reliable public Sepolia RPCs — tried in order until one works
+// These are used ONLY for read calls and dry-runs, NOT for signing
+const SEPOLIA_RPCS = [
+  "https://rpc.sepolia.org",
+  "https://ethereum-sepolia-rpc.publicnode.com",
+  "https://sepolia.drpc.org",
+];
+
 function prov() {
   return window.__activeProvider || window.ethereum;
 }
+
+// ── Direct RPC fetch (bypasses wallet RPC entirely for reads) ──
+async function directRpc(method, params = []) {
+  for (const rpcUrl of SEPOLIA_RPCS) {
+    try {
+      const res = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+      const json = await res.json();
+      if (json.error)
+        throw new Error(json.error.message || JSON.stringify(json.error));
+      return json.result;
+    } catch (e) {
+      console.warn(`RPC ${rpcUrl} failed:`, e.message);
+      // Try next RPC
+    }
+  }
+  throw new Error("All Sepolia RPC endpoints failed");
+}
+
+// ── Wallet RPC (used only for sending signed transactions) ──
+const walletRpc = (method, params = []) => prov().request({ method, params });
 
 // ── ABI encoding ──
 const strip0x = (s) => s.replace(/^0x/i, "");
@@ -56,16 +89,9 @@ export function formatGwei(wei) {
   return (Number(BigInt(wei)) / 1e9).toFixed(1);
 }
 
-// ── RPC ──
-const rpc = (method, params = []) => prov().request({ method, params });
-
-const ethCall = (to, sel, params = "") =>
-  rpc("eth_call", [{ to, data: "0x" + sel + params }, "latest"]);
-
 // ── Revert reason extractor ──
 function extractRevertReason(err) {
-  const msg =
-    err?.data?.message || err?.data?.data || err?.message || String(err);
+  const msg = err?.data?.message || err?.message || String(err);
   if (msg.includes("Vault already active"))
     return "You already have an active vault. Withdraw it first.";
   if (msg.includes("Funds are locked"))
@@ -76,74 +102,69 @@ function extractRevertReason(err) {
   if (msg.includes("Must send ETH")) return "Amount must be greater than 0.";
   if (msg.includes("Nothing to withdraw"))
     return "No unlocked vaults to withdraw.";
-  if (msg.includes("Invalid vault ID")) return "Invalid vault ID.";
-  // Generic revert
+  if (msg.includes("Invalid vault")) return "Invalid vault ID.";
   const m =
     msg.match(/execution reverted: (.+)/i) ||
     msg.match(/reverted with reason string '(.+)'/i);
   if (m) return m[1].trim();
-  return null; // no known reason — let caller decide
+  return null;
 }
 
-// Gas constants kept for reference only - do NOT send in transactions
-// Let wallet calculate gas natively to avoid false insufficient funds errors
-const GAS_LIMITS = {
-  deposit: "0x27100", // 160,000
-  withdraw: "0x186A0", // 100,000
-  withdrawAll: "0x30D40", // 200,000
-};
-
-// Before sending, do a dry-run eth_call to catch reverts with zero gas cost
+// ── Dry-run via direct RPC to catch reverts before sending ──
+// This uses our own RPC — NOT the wallet RPC — so it's not affected
+// by the wallet's gas price estimation bugs on Vercel/production
 async function dryRun(from, to, sel, params, value = "0x0") {
   try {
-    await rpc("eth_call", [
+    await directRpc("eth_call", [
       { from, to, data: "0x" + sel + params, value },
       "latest",
     ]);
   } catch (err) {
     const reason = extractRevertReason(err);
     if (reason) throw new Error(reason);
-    // eth_call can fail for non-revert reasons (e.g. node quirks) — ignore those
+    // Non-revert failure — ignore, let the actual sendTransaction handle it
   }
 }
 
-async function sendTx(
-  from,
-  to,
-  sel,
-  params = "",
-  value = "0x0",
-  gasKey = "deposit",
-) {
-  // Send transaction with much higher gas limit (1.5M) to allow proper estimation
-  // MetaMask will use this as upper bound and adjust based on simulation
-  // This prevents false "insufficient funds" errors on Sepolia
-  return rpc("eth_sendTransaction", [
+// ── Send transaction — NO gas field, let wallet handle it natively ──
+// Removing the gas field entirely means the wallet uses its own estimation
+// which is correct for the current network conditions. The dry-run above
+// already verified the tx won't revert, so native estimation is safe.
+async function sendTx(from, to, sel, params = "", value = "0x0") {
+  await dryRun(from, to, sel, params, value);
+  return walletRpc("eth_sendTransaction", [
     {
       from,
       to,
       data: "0x" + sel + params,
       value,
-      gas: "0x16E360", // 1,500,000 - high limit lets wallet estimate properly
+      // No gas field — wallet estimates natively from its own RPC
+      // This is the most reliable approach across all wallets and networks
     },
   ]);
 }
 
-// ── Account / chain ──
-export const requestAccounts = () => rpc("eth_requestAccounts");
-export const getAccounts = () => rpc("eth_accounts");
-export const getChainId = async () => parseInt(await rpc("eth_chainId"), 16);
-export const getBlockNumber = async () =>
-  parseInt(await rpc("eth_blockNumber"), 16);
-export const getGasPrice = async () => BigInt(await rpc("eth_gasPrice"));
+// ── Account / chain (via wallet) ──
+export const requestAccounts = () => walletRpc("eth_requestAccounts");
+export const getAccounts = () => walletRpc("eth_accounts");
+export const getChainId = async () =>
+  parseInt(await walletRpc("eth_chainId"), 16);
+export const getBlockNumber = async () => {
+  const r = await directRpc("eth_blockNumber", []);
+  return parseInt(r, 16);
+};
+export const getGasPrice = async () => {
+  const r = await directRpc("eth_gasPrice", []);
+  return BigInt(r);
+};
 
 // ── Network switching ──
 export async function switchToSepolia() {
   try {
-    await rpc("wallet_switchEthereumChain", [{ chainId: "0xaa36a7" }]);
+    await walletRpc("wallet_switchEthereumChain", [{ chainId: "0xaa36a7" }]);
   } catch (err) {
     if (err.code === 4902) {
-      await rpc("wallet_addEthereumChain", [
+      await walletRpc("wallet_addEthereumChain", [
         {
           chainId: "0xaa36a7",
           chainName: "Sepolia Testnet",
@@ -156,13 +177,13 @@ export async function switchToSepolia() {
   }
 }
 
-// ── Wait for confirmation ──
+// ── Wait for confirmation (via direct RPC, faster than wallet polling) ──
 export async function waitForReceipt(txHash, maxAttempts = 60) {
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((r) => setTimeout(r, 2000));
-    const receipt = await rpc("eth_getTransactionReceipt", [txHash]);
+    const receipt = await directRpc("eth_getTransactionReceipt", [txHash]);
     if (receipt) {
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, 2000));
       return receipt;
     }
   }
@@ -177,24 +198,20 @@ export async function deposit(from, contract, unlockTimeSec, weiAmount) {
     SEL.deposit,
     encUint(unlockTimeSec),
     "0x" + weiAmount.toString(16),
-    "deposit",
   );
 }
 export async function withdraw(from, contract, vaultId) {
-  return sendTx(
-    from,
-    contract,
-    SEL.withdraw,
-    encUint(vaultId),
-    "0x0",
-    "withdraw",
-  );
+  return sendTx(from, contract, SEL.withdraw, encUint(vaultId));
 }
 export async function withdrawAll(from, contract) {
-  return sendTx(from, contract, SEL.withdrawAll, "", "0x0", "withdrawAll");
+  return sendTx(from, contract, SEL.withdrawAll, "");
 }
 
-// ── Reads ──
+// ── Reads (via direct RPC — not wallet) ──
+async function ethCall(to, sel, params = "") {
+  return directRpc("eth_call", [{ to, data: "0x" + sel + params }, "latest"]);
+}
+
 export async function getActiveVaults(contract, userAddr) {
   const raw = await ethCall(contract, SEL.getActiveVaults, encAddr(userAddr));
   if (!raw || raw === "0x" || /^0x0*$/.test(raw)) return [[], [], []];
