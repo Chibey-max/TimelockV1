@@ -66,14 +66,12 @@ export default function Home() {
             vaults={vaults.vaults}
             isLoading={vaults.isLoading}
             isConnected={wallet.isConnected}
-            isWrongNet={wallet.isWrongNet}
             address={wallet.address}
             chainId={wallet.chainId}
             ethPrice={blockInfo.ethPrice}
             onRefresh={vaults.load}
             onSuccess={vaults.loadAfterTx}
             toast={toast}
-            switchNetwork={wallet.switchNetwork}
           />
         </section>
       </main>

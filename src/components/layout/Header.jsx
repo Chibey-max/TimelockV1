@@ -1,12 +1,12 @@
-"use client";
-import { useState, useEffect } from "react";
-import WalletModal from "@/components/ui/WalletModal";
+'use client';
+import { useState, useEffect } from 'react';
+import WalletModal from '@/components/ui/WalletModal';
 
 export default function Header({ wallet }) {
-  const [theme, setTheme] = useState("dark");
+  const [theme, setTheme] = useState('dark');
 
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
+    document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
   return (
@@ -18,86 +18,46 @@ export default function Header({ wallet }) {
             Timelocked<span className="logo-dim">Vault</span>
           </a>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             {wallet.isConnected && !wallet.isWrongNet && (
               <div className="network-badge">
                 <div className="network-dot" />
-                <span>{wallet.network?.name ?? "Unknown"}</span>
+                <span>{wallet.network?.name ?? 'Unknown'}</span>
               </div>
             )}
-            <button
-              className="theme-toggle"
-              onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-              title="Toggle theme"
-            >
-              {theme === "dark" ? "🌙" : "☀️"}
+            <button className="theme-toggle"
+              onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+              title="Toggle theme">
+              {theme === 'dark' ? '🌙' : '☀️'}
             </button>
             {wallet.isConnected ? (
-              <button
-                className="btn-wallet connected"
-                onClick={wallet.disconnect}
-              >
-                <span>🔗</span>
-                <span>{wallet.truncatedAddress}</span>
+              <button className="btn-wallet connected" onClick={wallet.disconnect}>
+                <span>🔗</span><span>{wallet.truncatedAddress}</span>
               </button>
             ) : (
-              <button
-                className="btn-wallet"
-                onClick={wallet.openModal}
-                disabled={wallet.isConnecting}
-              >
+              <button className="btn-wallet" onClick={wallet.openModal} disabled={wallet.isConnecting}>
                 <span>👛</span>
-                <span>
-                  {wallet.isConnecting ? "Connecting…" : "Connect Wallet"}
-                </span>
+                <span>{wallet.isConnecting ? 'Connecting…' : 'Connect Wallet'}</span>
               </button>
             )}
           </div>
         </div>
 
         {wallet.isWrongNet && (
-          <div
-            style={{
-              background: "#7c2d12",
-              color: "#fed7aa",
-              fontSize: 12,
-              padding: "8px 24px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 12,
-              fontFamily: "JetBrains Mono, monospace",
-            }}
-          >
+          <div style={{ background:'#7c2d12', color:'#fed7aa', fontSize:12, padding:'8px 24px',
+            display:'flex', alignItems:'center', justifyContent:'center', gap:12,
+            fontFamily:'JetBrains Mono, monospace' }}>
             ⚠ Wrong network — switch to Sepolia Testnet
-            <button
-              onClick={wallet.switchNetwork}
-              style={{
-                background: "#f5a623",
-                color: "#0d0a00",
-                border: "none",
-                borderRadius: 6,
-                padding: "3px 10px",
-                fontSize: 11,
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
+            <button onClick={wallet.switchNetwork} style={{ background:'#f5a623', color:'#0d0a00',
+              border:'none', borderRadius:6, padding:'3px 10px', fontSize:11,
+              fontWeight:700, cursor:'pointer' }}>
               Switch to Sepolia
             </button>
           </div>
         )}
         {wallet.error && (
-          <div
-            style={{
-              background: "#450a0a",
-              color: "#fca5a5",
-              fontSize: 12,
-              padding: "6px 24px",
-              textAlign: "center",
-              fontFamily: "JetBrains Mono, monospace",
-            }}
-          >
+          <div style={{ background:'#450a0a', color:'#fca5a5', fontSize:12,
+            padding:'6px 24px', textAlign:'center', fontFamily:'JetBrains Mono, monospace' }}>
             ⚠ {wallet.error}
           </div>
         )}

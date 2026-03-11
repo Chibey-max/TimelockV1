@@ -1,177 +1,149 @@
-"use client";
-import { useState, useEffect, useCallback, useRef } from "react";
-import { NETWORKS } from "@/lib/contract";
-import { truncateAddr } from "@/lib/utils";
+'use client';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { NETWORKS } from '@/lib/contract';
+import { truncateAddr } from '@/lib/utils';
 
-const SEPOLIA_CHAIN_ID = 11155111;
-const SEPOLIA_HEX = "0xaa36a7";
+const SEPOLIA_ID  = 11155111;
+const SEPOLIA_HEX = '0xaa36a7';
 
-async function doSwitchToSepolia(provider) {
-  try {
-    await provider.request({
-      method: "wallet_switchEthereumChain",
-      params: [{ chainId: SEPOLIA_HEX }],
-    });
-  } catch (err) {
-    if (err.code === 4902) {
-      await provider.request({
-        method: "wallet_addEthereumChain",
-        params: [
-          {
-            chainId: SEPOLIA_HEX,
-            chainName: "Sepolia Testnet",
-            nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
-            rpcUrls: ["https://rpc.sepolia.org"],
-            blockExplorerUrls: ["https://sepolia.etherscan.io"],
-          },
-        ],
-      });
-    } else {
-      throw err;
-    }
-  }
+function getAnyProvider() {
+  if (typeof window === 'undefined') return null;
+  return window.__activeProvider
+    || window.rabby
+    || window.ethereum
+    || null;
+}
+
+async function addSepolia(p) {
+  await p.request({
+    method: 'wallet_addEthereumChain',
+    params: [{
+      chainId:           SEPOLIA_HEX,
+      chainName:         'Sepolia Testnet',
+      nativeCurrency:    { name: 'ETH', symbol: 'ETH', decimals: 18 },
+      rpcUrls:           ['https://rpc.sepolia.org'],
+      blockExplorerUrls: ['https://sepolia.etherscan.io'],
+    }],
+  });
 }
 
 export function useWallet() {
-  const [address, setAddress] = useState("");
-  const [chainId, setChainId] = useState(null);
-  const [isConnected, setIsConnected] = useState(false);
+  const [address,      setAddress]      = useState('');
+  const [chainId,      setChainId]      = useState(null);
+  const [isConnected,  setIsConnected]  = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [error, setError] = useState("");
-  const connectingRef = useRef(false); // prevent double-calls
+  const [error,        setError]        = useState('');
+  const [showModal,    setShowModal]    = useState(false);
+  const busy = useRef(false);
 
-  const network = chainId
-    ? NETWORKS[chainId] || { name: `Chain ${chainId}`, explorer: "" }
-    : null;
-  const isWrongNet = isConnected && chainId !== SEPOLIA_CHAIN_ID;
+  const network    = chainId ? (NETWORKS[chainId] || { name: `Chain ${chainId}`, explorer: '' }) : null;
+  const isWrongNet = isConnected && chainId !== SEPOLIA_ID;
 
-  // ── Silent reconnect — only runs on mount, never shows a popup ──
-  const silentReconnect = useCallback(async (p) => {
-    try {
-      // eth_accounts is silent — returns [] if not already approved, no popup
-      const accounts = await p.request({ method: "eth_accounts" });
-      if (!accounts?.length) return; // not previously connected, do nothing
+  // Core connect — accepts any provider, triggers MetaMask popup
+  const connect = useCallback(async (specificProvider) => {
+    if (busy.current) return;
+    busy.current = true;
 
-      const chain = parseInt(await p.request({ method: "eth_chainId" }), 16);
-      window.__activeProvider = p;
-      setAddress(accounts[0]);
-      setChainId(chain);
-      setIsConnected(true);
-    } catch {
-      // Silent fail — user just won't be auto-connected
-    }
-  }, []);
-
-  // ── User-initiated connect — called by WalletModal ──
-  const connect = useCallback(async (specificProvider = null) => {
-    if (connectingRef.current) return; // prevent double invocation
-    connectingRef.current = true;
-
-    const p = specificProvider || window.__activeProvider || window.ethereum;
+    const p = specificProvider || getAnyProvider();
     if (!p) {
-      setError("No wallet found — install MetaMask, Rabby, or any EVM wallet");
-      connectingRef.current = false;
+      setError('No wallet found. Install MetaMask or Rabby.');
+      busy.current = false;
       return;
     }
 
     setIsConnecting(true);
-    setError("");
+    setError('');
 
     try {
-      // eth_requestAccounts — shows the MetaMask popup (user-initiated only)
-      const accounts = await p.request({ method: "eth_requestAccounts" });
-      if (!accounts?.length) throw new Error("No accounts returned");
+      const accounts = await p.request({ method: 'eth_requestAccounts' });
+      if (!accounts?.length) throw new Error('No accounts returned');
 
-      let chain = parseInt(await p.request({ method: "eth_chainId" }), 16);
+      let chain = parseInt(await p.request({ method: 'eth_chainId' }), 16);
 
-      if (chain !== SEPOLIA_CHAIN_ID) {
+      if (chain !== SEPOLIA_ID) {
         try {
-          await doSwitchToSepolia(p);
-          chain = SEPOLIA_CHAIN_ID;
-        } catch (switchErr) {
-          // User dismissed network switch — connect anyway, show banner
-          console.warn("Network switch skipped:", switchErr.message);
+          await p.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: SEPOLIA_HEX }] });
+          chain = SEPOLIA_ID;
+        } catch (e) {
+          if (e.code === 4902) { await addSepolia(p); chain = SEPOLIA_ID; }
+          // if user dismissed — still connect, banner will show
         }
-        // Re-read chain after switch attempt
-        chain = parseInt(await p.request({ method: "eth_chainId" }), 16);
+        chain = parseInt(await p.request({ method: 'eth_chainId' }), 16);
       }
 
       window.__activeProvider = p;
       setAddress(accounts[0]);
       setChainId(chain);
       setIsConnected(true);
-      setError("");
+      setError('');
+      setShowModal(false);
     } catch (err) {
-      if (err.code === 4001) setError("Connection rejected");
-      else if (err.code === -32002)
-        setError("Request pending — open your wallet");
-      else setError(err.message?.slice(0, 80) || "Connection failed");
+      if      (err.code === 4001)   setError('Rejected — please approve in your wallet');
+      else if (err.code === -32002) setError('Already pending — open your wallet');
+      else                          setError(err.message?.slice(0, 100) || 'Connection failed');
     } finally {
       setIsConnecting(false);
-      connectingRef.current = false;
+      busy.current = false;
     }
   }, []);
 
+  const openModal  = useCallback(() => setShowModal(true),  []);
+  const closeModal = useCallback(() => setShowModal(false), []);
+
   const disconnect = useCallback(() => {
-    setAddress("");
-    setChainId(null);
-    setIsConnected(false);
-    setError("");
+    setAddress(''); setChainId(null);
+    setIsConnected(false); setError('');
     window.__activeProvider = null;
   }, []);
 
   const switchNetwork = useCallback(async () => {
-    const p = window.__activeProvider || window.ethereum;
+    const p = getAnyProvider();
     if (!p) return;
     try {
-      await doSwitchToSepolia(p);
-      const chain = parseInt(await p.request({ method: "eth_chainId" }), 16);
-      setChainId(chain);
-      setError("");
-    } catch {
-      setError("Failed to switch to Sepolia");
+      await p.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: SEPOLIA_HEX }] });
+      setChainId(SEPOLIA_ID); setError('');
+    } catch (e) {
+      if (e.code === 4902) { await addSepolia(p); setChainId(SEPOLIA_ID); }
+      else setError('Failed to switch network');
     }
   }, []);
 
-  // ── Mount: silent reconnect + wire wallet events ──
+  // Silent auto-reconnect on mount — no popup
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const p = window.__activeProvider || window.ethereum;
+    const p = getAnyProvider();
     if (!p) return;
 
-    // Silent reconnect — no popup, no eth_requestAccounts
-    silentReconnect(p);
+    p.request({ method: 'eth_accounts' })
+      .then(accs => {
+        if (!accs?.length) return;
+        p.request({ method: 'eth_chainId' }).then(hex => {
+          window.__activeProvider = p;
+          setAddress(accs[0]);
+          setChainId(parseInt(hex, 16));
+          setIsConnected(true);
+        });
+      })
+      .catch(() => {});
 
-    const onAccountsChanged = (accs) => {
-      if (accs.length === 0) disconnect();
-      else {
-        setAddress(accs[0]);
-        setIsConnected(true);
-      }
+    const onAccounts = accs => {
+      if (!accs?.length) disconnect();
+      else { setAddress(accs[0]); setIsConnected(true); }
     };
-    const onChainChanged = (hexChain) => {
-      setChainId(parseInt(hexChain, 16));
-    };
+    const onChain = hex => setChainId(parseInt(hex, 16));
 
-    p.on?.("accountsChanged", onAccountsChanged);
-    p.on?.("chainChanged", onChainChanged);
+    p.on?.('accountsChanged', onAccounts);
+    p.on?.('chainChanged', onChain);
     return () => {
-      p.removeListener?.("accountsChanged", onAccountsChanged);
-      p.removeListener?.("chainChanged", onChainChanged);
+      p.removeListener?.('accountsChanged', onAccounts);
+      p.removeListener?.('chainChanged', onChain);
     };
-  }, [silentReconnect, disconnect]);
+  }, [disconnect]);
 
   return {
-    address,
-    chainId,
-    network,
-    isConnected,
-    isConnecting,
-    isWrongNet,
-    error,
-    connect,
-    disconnect,
-    switchNetwork,
-    truncatedAddress: address ? truncateAddr(address) : "",
+    address, chainId, network,
+    isConnected, isConnecting, isWrongNet, error,
+    showModal, openModal, closeModal,
+    connect, disconnect, switchNetwork,
+    truncatedAddress: address ? truncateAddr(address) : '',
   };
 }
