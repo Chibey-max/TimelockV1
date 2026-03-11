@@ -6,7 +6,7 @@ import { deposit, waitForReceipt, parseEther } from '@/lib/web3mini';
 import { CONTRACT_ADDRESS, NETWORKS } from '@/lib/contract';
 import { formatDate } from '@/lib/utils';
 
-const QUICK_AMOUNTS   = [0.01, 0.05, 0.1, 0.5, 1];
+const QUICK_AMOUNTS   = [0.001, 0.01, 0.05, 0.1, 0.5];
 const QUICK_DURATIONS = [
   { label: '7d',   days: 7   },
   { label: '30d',  days: 30  },
@@ -21,21 +21,21 @@ function daysFromNow(days) {
 }
 
 export default function DepositForm({ wallet, onSuccess, toast }) {
-  const [amount,       setAmount]       = useState('');
-  const [unlockVal,    setUnlockVal]    = useState(daysFromNow(30));
-  const [confirmOpen,  setConfirmOpen]  = useState(false);
-  const [walletOpen,   setWalletOpen]   = useState(false);
-  const [loading,      setLoading]      = useState(false);
+  const [amount,      setAmount]      = useState('');
+  const [unlockVal,   setUnlockVal]   = useState(daysFromNow(30));
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [walletOpen,  setWalletOpen]  = useState(false);
+  const [loading,     setLoading]     = useState(false);
 
   const unlockMs = unlockVal ? new Date(unlockVal).getTime() : 0;
   const diffDays = unlockMs ? Math.round((unlockMs - Date.now()) / 86400000) : 0;
 
   function openConfirm() {
     const amt = parseFloat(amount);
-    if (!amt || amt <= 0)                              return toast.error('Invalid Amount', 'Enter a valid ETH amount');
-    if (!unlockVal)                                    return toast.error('No Unlock Time', 'Select an unlock date');
-    if (unlockMs <= Date.now())                        return toast.error('Invalid Date', 'Unlock time must be in the future');
-    if (unlockMs > Date.now() + 365 * 86400000)       return toast.error('Too Far', 'Max lock duration is 1 year');
+    if (!amt || amt <= 0)                        return toast.error('Invalid Amount', 'Enter a valid ETH amount');
+    if (!unlockVal)                              return toast.error('No Unlock Time', 'Select an unlock date');
+    if (unlockMs <= Date.now())                  return toast.error('Invalid Date', 'Unlock time must be in the future');
+    if (unlockMs > Date.now() + 365*86400000)   return toast.error('Too Far', 'Max lock duration is 1 year');
     setConfirmOpen(true);
   }
 
@@ -57,7 +57,7 @@ export default function DepositForm({ wallet, onSuccess, toast }) {
       }
 
       await waitForReceipt(txHash);
-      toast.success('Vault Created!', `${parseFloat(amount).toFixed(4)} ETH locked for ${diffDays} day${diffDays !== 1 ? 's' : ''}`);
+      toast.success('Vault Created!', `${amount} ETH locked for ${diffDays} day${diffDays !== 1 ? 's' : ''}`);
       setAmount('');
       setUnlockVal(daysFromNow(30));
       onSuccess?.();
@@ -71,7 +71,7 @@ export default function DepositForm({ wallet, onSuccess, toast }) {
     }
   }
 
-  // ── Not connected state ──
+  // ── Not connected ──
   if (!wallet.isConnected) {
     return (
       <>
@@ -90,35 +90,39 @@ export default function DepositForm({ wallet, onSuccess, toast }) {
             </button>
           </div>
         </div>
-
-        {/* Own WalletModal instance so it works independently of Header */}
         <WalletModal
           isOpen={walletOpen}
           onClose={() => setWalletOpen(false)}
-          onConnect={async (p) => {
-            await wallet.connect(p);
-            setWalletOpen(false);
-          }}
+          onConnect={async (p) => { await wallet.connect(p); setWalletOpen(false); }}
         />
       </>
     );
   }
 
-  // ── Connected state ──
+  // ── Connected ──
   return (
     <>
       <div className="card">
         <div className="card-title">New Deposit</div>
 
         <div className="form-group">
-          <label className="form-label">Amount</label>
+          <label className="form-label">Amount (ETH)</label>
           <div className="input-wrap">
-            <input type="number" className="form-input"
-              placeholder="0.0" step="0.001" min="0.001"
-              value={amount} onChange={e => setAmount(e.target.value)}
-              style={{ paddingRight: 42 }} />
+            <input
+              type="number" className="form-input"
+              placeholder="0.0" step="any" min="0.001"
+              value={amount}
+              onChange={e => setAmount(e.target.value)}
+              style={{ paddingRight: 42 }}
+            />
             <span className="input-suffix">ETH</span>
           </div>
+          {/* Show exact parsed value so user sees exactly what will be deposited */}
+          {amount && parseFloat(amount) > 0 && (
+            <div className="form-hint" style={{ color: 'var(--gold)' }}>
+              Depositing exactly: {parseFloat(amount).toLocaleString(undefined, { maximumFractionDigits: 18 })} ETH
+            </div>
+          )}
           <div className="quick-picks">
             {QUICK_AMOUNTS.map(v => (
               <button key={v} className="quick-pick" onClick={() => setAmount(String(v))}>{v}</button>
@@ -128,9 +132,12 @@ export default function DepositForm({ wallet, onSuccess, toast }) {
 
         <div className="form-group">
           <label className="form-label">Unlock Date & Time</label>
-          <input type="datetime-local" className="form-input"
-            value={unlockVal} onChange={e => setUnlockVal(e.target.value)} />
-          <div className="form-hint">⚠ Must be within 1 year from now</div>
+          <input
+            type="datetime-local" className="form-input"
+            value={unlockVal}
+            onChange={e => setUnlockVal(e.target.value)}
+          />
+          <div className="form-hint">Must be within 1 year from now</div>
           <div className="quick-picks">
             {QUICK_DURATIONS.map(({ label, days }) => (
               <button key={label} className="quick-pick" onClick={() => setUnlockVal(daysFromNow(days))}>{label}</button>
@@ -151,25 +158,34 @@ export default function DepositForm({ wallet, onSuccess, toast }) {
         <div className="modal-subtitle">Review your vault details before locking ETH</div>
         <div className="modal-detail">
           <div className="modal-detail-row">
-            <span className="modal-detail-key">Amount</span>
-            <span className="modal-detail-val">{parseFloat(amount || 0).toFixed(4)} ETH</span>
+            <span className="modal-detail-key">Amount to Lock</span>
+            {/* Show FULL amount — no rounding */}
+            <span className="modal-detail-val" style={{ color: 'var(--gold)', fontWeight: 700 }}>
+              {amount} ETH
+            </span>
           </div>
           <div className="modal-detail-row">
             <span className="modal-detail-key">Unlock Time</span>
             <span className="modal-detail-val">{unlockMs ? formatDate(unlockMs) : '—'}</span>
           </div>
           <div className="modal-detail-row">
-            <span className="modal-detail-key">Duration</span>
+            <span className="modal-detail-key">Lock Duration</span>
             <span className="modal-detail-val">{diffDays} day{diffDays !== 1 ? 's' : ''}</span>
           </div>
+          <div className="modal-detail-row">
+            <span className="modal-detail-key">Network Fee</span>
+            <span className="modal-detail-val" style={{ color: 'var(--text-secondary)' }}>~0.001 ETH (Sepolia)</span>
+          </div>
         </div>
-        <div className="modal-warning">⚠ ETH will be locked until the unlock time. This cannot be undone.</div>
+        <div className="modal-warning">
+          ⚠ ETH will be locked until the unlock time. This cannot be undone.
+        </div>
         <div className="modal-actions">
-          <button className="btn btn-secondary" style={{ flex:1 }}
+          <button className="btn btn-secondary" style={{ flex: 1 }}
             onClick={() => setConfirmOpen(false)} disabled={loading}>
             Cancel
           </button>
-          <button className="btn btn-primary" style={{ flex:2 }}
+          <button className="btn btn-primary" style={{ flex: 2 }}
             onClick={execute} disabled={loading}>
             {loading ? <><span className="spinner" /> Confirming…</> : 'Confirm & Lock'}
           </button>

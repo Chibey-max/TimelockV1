@@ -13,9 +13,7 @@ export function useVaults(address) {
     setIsLoading(true);
     setError('');
     try {
-      // Single fetch — direct RPC is fast, no retry loop needed
       const [ids, balances, unlockTimes] = await getActiveVaults(CONTRACT_ADDRESS, address);
-
       setVaults(ids.map((id, i) => ({
         id:          Number(id),
         amount:      parseFloat(formatEther(balances[i])),
@@ -31,10 +29,17 @@ export function useVaults(address) {
     }
   }, [address]);
 
+  // Called after a tx confirms — waits a beat then reloads
+  const loadAfterTx = useCallback(async () => {
+    if (!address) return;
+    await new Promise(r => setTimeout(r, 2000));
+    await load();
+  }, [address, load]);
+
   const now             = Date.now();
   const totalBalance    = vaults.reduce((s, v) => s + v.amount, 0);
   const unlockedBalance = vaults.filter(v => now >= v.unlockTime).reduce((s, v) => s + v.amount, 0);
   const unlockedVaults  = vaults.filter(v => now >= v.unlockTime);
 
-  return { vaults, isLoading, error, load, totalBalance, unlockedBalance, unlockedVaults };
+  return { vaults, isLoading, error, load, loadAfterTx, totalBalance, unlockedBalance, unlockedVaults };
 }
