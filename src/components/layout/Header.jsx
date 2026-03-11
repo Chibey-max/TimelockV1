@@ -4,7 +4,6 @@ import WalletModal from "@/components/ui/WalletModal";
 
 export default function Header({ wallet }) {
   const [theme, setTheme] = useState("dark");
-  const [modalOpen, setModalOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -26,7 +25,6 @@ export default function Header({ wallet }) {
                 <span>{wallet.network?.name ?? "Unknown"}</span>
               </div>
             )}
-
             <button
               className="theme-toggle"
               onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
@@ -34,7 +32,6 @@ export default function Header({ wallet }) {
             >
               {theme === "dark" ? "🌙" : "☀️"}
             </button>
-
             {wallet.isConnected ? (
               <button
                 className="btn-wallet connected"
@@ -46,7 +43,7 @@ export default function Header({ wallet }) {
             ) : (
               <button
                 className="btn-wallet"
-                onClick={() => setModalOpen(true)}
+                onClick={wallet.openModal}
                 disabled={wallet.isConnecting}
               >
                 <span>👛</span>
@@ -58,7 +55,6 @@ export default function Header({ wallet }) {
           </div>
         </div>
 
-        {/* Wrong network banner */}
         {wallet.isWrongNet && (
           <div
             style={{
@@ -73,7 +69,7 @@ export default function Header({ wallet }) {
               fontFamily: "JetBrains Mono, monospace",
             }}
           >
-            ⚠ Wrong network — this app runs on Sepolia Testnet
+            ⚠ Wrong network — switch to Sepolia Testnet
             <button
               onClick={wallet.switchNetwork}
               style={{
@@ -85,14 +81,12 @@ export default function Header({ wallet }) {
                 fontSize: 11,
                 fontWeight: 700,
                 cursor: "pointer",
-                fontFamily: "inherit",
               }}
             >
               Switch to Sepolia
             </button>
           </div>
         )}
-
         {wallet.error && (
           <div
             style={{
@@ -110,8 +104,8 @@ export default function Header({ wallet }) {
       </header>
 
       <WalletModal
-        isOpen={modalOpen}
-        onClose={() => setModalOpen(false)}
+        isOpen={wallet.showModal}
+        onClose={wallet.closeModal}
         onConnect={wallet.connect}
       />
     </>

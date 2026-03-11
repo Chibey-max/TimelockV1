@@ -1,12 +1,8 @@
 "use client";
 import { useState } from "react";
 import Modal from "@/components/ui/Modal";
-import {
-  deposit,
-  waitForReceipt,
-  parseEther,
-  getGasPrice,
-} from "@/lib/web3mini";
+import WalletModal from "@/components/ui/WalletModal";
+import { deposit, waitForReceipt, parseEther } from "@/lib/web3mini";
 import { CONTRACT_ADDRESS, NETWORKS } from "@/lib/contract";
 import { formatDate } from "@/lib/utils";
 
@@ -27,16 +23,16 @@ function daysFromNow(days) {
 export default function DepositForm({ wallet, onSuccess, toast }) {
   const [amount, setAmount] = useState("");
   const [unlockVal, setUnlockVal] = useState(daysFromNow(30));
-  const [modalOpen, setModalOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [walletOpen, setWalletOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [gasEst, setGasEst] = useState(null); // estimated fee in ETH
 
   const unlockMs = unlockVal ? new Date(unlockVal).getTime() : 0;
   const diffDays = unlockMs
     ? Math.round((unlockMs - Date.now()) / 86400000)
     : 0;
 
-  async function openModal() {
+  function openConfirm() {
     const amt = parseFloat(amount);
     if (!amt || amt <= 0)
       return toast.error("Invalid Amount", "Enter a valid ETH amount");
@@ -46,19 +42,7 @@ export default function DepositForm({ wallet, onSuccess, toast }) {
       return toast.error("Invalid Date", "Unlock time must be in the future");
     if (unlockMs > Date.now() + 365 * 86400000)
       return toast.error("Too Far", "Max lock duration is 1 year");
-
-    // Estimate gas fee before showing modal so user sees accurate cost
-    try {
-      const gasPrice = await getGasPrice(); // wei per gas
-      const gasLimit = 150000n; // safe upper bound for deposit
-      const feeWei = gasPrice * gasLimit;
-      const feeEth = Number(feeWei) / 1e18;
-      setGasEst(feeEth.toFixed(6));
-    } catch {
-      setGasEst(null);
-    }
-
-    setModalOpen(true);
+    setConfirmOpen(true);
   }
 
   async function execute() {
@@ -73,8 +57,8 @@ export default function DepositForm({ wallet, onSuccess, toast }) {
         wei,
       );
 
-      setModalOpen(false);
-      toast.info("Transaction Submitted", "Waiting for confirmation…");
+      setConfirmOpen(false);
+      toast.info("Transaction Submitted", "Waiting for on-chain confirmation…");
 
       const net = NETWORKS[wallet.chainId] || { explorer: "" };
       if (net.explorer) {
@@ -106,43 +90,42 @@ export default function DepositForm({ wallet, onSuccess, toast }) {
     }
   }
 
+  // ── Not connected state ──
   if (!wallet.isConnected) {
     return (
-      <div className="card">
-        <div className="card-title">New Deposit</div>
-        <div className="connect-prompt">
-          <div className="connect-icon">🔒</div>
-          <div className="connect-title">Wallet Required</div>
-          <div className="connect-sub">
-            Connect your wallet to create time-locked vaults
+      <>
+        <div className="card">
+          <div className="card-title">New Deposit</div>
+          <div className="connect-prompt">
+            <div className="connect-icon">🔒</div>
+            <div className="connect-title">Wallet Required</div>
+            <div className="connect-sub">
+              Connect your wallet to create time-locked vaults
+            </div>
+            <button
+              className="btn btn-primary"
+              onClick={() => setWalletOpen(true)}
+              disabled={wallet.isConnecting}
+            >
+              {wallet.isConnecting ? "Connecting…" : "Connect Wallet"}
+            </button>
           </div>
-          <button className="btn btn-primary" onClick={wallet.connect}>
-            Connect Wallet
-          </button>
         </div>
-      </div>
+
+        {/* Own WalletModal instance so it works independently of Header */}
+        <WalletModal
+          isOpen={walletOpen}
+          onClose={() => setWalletOpen(false)}
+          onConnect={async (p) => {
+            await wallet.connect(p);
+            setWalletOpen(false);
+          }}
+        />
+      </>
     );
   }
 
-  // Block deposit if wrong network
-  if (wallet.isWrongNet) {
-    return (
-      <div className="card">
-        <div className="card-title">New Deposit</div>
-        <div className="connect-prompt">
-          <div className="connect-icon">⚠️</div>
-          <div className="connect-title">Wrong Network</div>
-          <div className="connect-sub">
-            This app runs on Sepolia Testnet. Please switch network to continue.
-          </div>
-          <button className="btn btn-primary" onClick={wallet.switchNetwork}>
-            Switch to Sepolia
-          </button>
-        </div>
-      </div>
-    );
-  }
-
+  // ── Connected state ──
   return (
     <>
       <div className="card">
@@ -184,7 +167,7 @@ export default function DepositForm({ wallet, onSuccess, toast }) {
             value={unlockVal}
             onChange={(e) => setUnlockVal(e.target.value)}
           />
-          <div className="form-hint">Must be within 1 year from now</div>
+          <div className="form-hint">⚠ Must be within 1 year from now</div>
           <div className="quick-picks">
             {QUICK_DURATIONS.map(({ label, days }) => (
               <button
@@ -198,7 +181,7 @@ export default function DepositForm({ wallet, onSuccess, toast }) {
           </div>
         </div>
 
-        <button className="btn btn-primary btn-full" onClick={openModal}>
+        <button className="btn btn-primary btn-full" onClick={openConfirm}>
           🔒 Lock ETH
         </button>
         <div
@@ -209,13 +192,17 @@ export default function DepositForm({ wallet, onSuccess, toast }) {
         </div>
       </div>
 
-      <Modal isOpen={modalOpen} onClose={() => !loading && setModalOpen(false)}>
+      <Modal
+        isOpen={confirmOpen}
+        onClose={() => !loading && setConfirmOpen(false)}
+      >
         <div className="modal-title">🔒 Confirm Deposit</div>
-        <div className="modal-subtitle">Review your vault before locking</div>
-
+        <div className="modal-subtitle">
+          Review your vault details before locking ETH
+        </div>
         <div className="modal-detail">
           <div className="modal-detail-row">
-            <span className="modal-detail-key">Amount to Lock</span>
+            <span className="modal-detail-key">Amount</span>
             <span className="modal-detail-val">
               {parseFloat(amount || 0).toFixed(4)} ETH
             </span>
@@ -227,39 +214,20 @@ export default function DepositForm({ wallet, onSuccess, toast }) {
             </span>
           </div>
           <div className="modal-detail-row">
-            <span className="modal-detail-key">Lock Duration</span>
+            <span className="modal-detail-key">Duration</span>
             <span className="modal-detail-val">
               {diffDays} day{diffDays !== 1 ? "s" : ""}
             </span>
           </div>
-          <div className="modal-detail-row">
-            <span className="modal-detail-key">Est. Network Fee</span>
-            <span
-              className="modal-detail-val"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              {gasEst ? `~${gasEst} ETH` : "~0.0003 ETH"}
-            </span>
-          </div>
         </div>
-
-        {/* Warn if amount is very small relative to gas */}
-        {gasEst && parseFloat(amount) < parseFloat(gasEst) * 10 && (
-          <div className="modal-warning">
-            ⚠ Your deposit amount is close to the network fee. Make sure you
-            have enough Sepolia ETH to cover both.
-          </div>
-        )}
-
         <div className="modal-warning">
           ⚠ ETH will be locked until the unlock time. This cannot be undone.
         </div>
-
         <div className="modal-actions">
           <button
             className="btn btn-secondary"
             style={{ flex: 1 }}
-            onClick={() => setModalOpen(false)}
+            onClick={() => setConfirmOpen(false)}
             disabled={loading}
           >
             Cancel

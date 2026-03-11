@@ -1,37 +1,25 @@
 "use client";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 
-// Detect wallets ONCE globally — not inside the modal component
-// This avoids the closure/remount issue where detected[] resets each time modal opens
-let _cachedWallets = [];
-let _listeners = new Set();
+// Global wallet registry — populated once, survives component remounts
+if (typeof window !== "undefined" && !window.__walletRegistry) {
+  window.__walletRegistry = { wallets: [], listeners: new Set() };
 
-function notifyListeners() {
-  _listeners.forEach((fn) => fn([..._cachedWallets]));
-}
+  const reg = window.__walletRegistry;
 
-function initWalletDetection() {
-  if (typeof window === "undefined") return;
-  if (window.__walletDetectionInit) return;
-  window.__walletDetectionInit = true;
-
-  // EIP-6963: modern wallets announce themselves
-  window.addEventListener("eip6963:announceProvider", (event) => {
-    const { info, provider } = event.detail;
-    if (!_cachedWallets.find((w) => w.info.uuid === info.uuid)) {
-      _cachedWallets.push({ info, provider });
-      notifyListeners();
+  window.addEventListener("eip6963:announceProvider", (e) => {
+    const { info, provider } = e.detail;
+    if (!reg.wallets.find((w) => w.info.uuid === info.uuid)) {
+      reg.wallets.push({ info, provider });
+      reg.listeners.forEach((fn) => fn([...reg.wallets]));
     }
   });
 
   window.dispatchEvent(new Event("eip6963:requestProvider"));
 
-  // Legacy fallback after 300ms — gives EIP-6963 wallets time to announce first
+  // Legacy fallback — window.ethereum for MetaMask etc.
   setTimeout(() => {
-    if (
-      window.ethereum &&
-      !_cachedWallets.find((w) => w.info.uuid === "legacy")
-    ) {
+    if (window.ethereum && !reg.wallets.find((w) => w.info.uuid === "legacy")) {
       const name = window.ethereum.isRabby
         ? "Rabby"
         : window.ethereum.isCoinbaseWallet
@@ -41,31 +29,35 @@ function initWalletDetection() {
             : window.ethereum.isMetaMask
               ? "MetaMask"
               : "Browser Wallet";
-      _cachedWallets.push({
+      reg.wallets.push({
         info: { name, icon: null, uuid: "legacy", rdns: "legacy" },
         provider: window.ethereum,
       });
-      notifyListeners();
+      reg.listeners.forEach((fn) => fn([...reg.wallets]));
     }
   }, 300);
 }
 
-function useDetectedWallets() {
-  const [wallets, setWallets] = useState(() => [..._cachedWallets]);
+function useWalletRegistry() {
+  const [wallets, setWallets] = useState(() =>
+    typeof window !== "undefined"
+      ? [...(window.__walletRegistry?.wallets || [])]
+      : [],
+  );
 
   useEffect(() => {
-    initWalletDetection();
-    // Subscribe to updates
-    _listeners.add(setWallets);
-    // Immediately sync in case wallets were detected before this component mounted
-    setWallets([..._cachedWallets]);
-    return () => _listeners.delete(setWallets);
+    if (typeof window === "undefined") return;
+    const reg = window.__walletRegistry;
+    if (!reg) return;
+    setWallets([...reg.wallets]); // sync immediately
+    reg.listeners.add(setWallets);
+    return () => reg.listeners.delete(setWallets);
   }, []);
 
   return wallets;
 }
 
-const WALLET_EMOJI = {
+const EMOJI = {
   MetaMask: "🦊",
   Rabby: "🐰",
   "Coinbase Wallet": "🔵",
@@ -77,11 +69,10 @@ const WALLET_EMOJI = {
 };
 
 export default function WalletModal({ isOpen, onClose, onConnect }) {
-  const wallets = useDetectedWallets();
+  const wallets = useWalletRegistry();
   const [connecting, setConnecting] = useState(null);
   const [error, setError] = useState("");
 
-  // Reset error when modal opens
   useEffect(() => {
     if (isOpen) setError("");
   }, [isOpen]);
@@ -93,7 +84,7 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
     setError("");
     try {
       await onConnect(wallet.provider);
-      onClose();
+      // onConnect is responsible for closing if needed
     } catch (err) {
       setError(err.message?.slice(0, 100) || "Connection failed");
     } finally {
@@ -107,12 +98,12 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(0,0,0,0.75)",
+        background: "rgba(0,0,0,0.8)",
         backdropFilter: "blur(4px)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        zIndex: 500,
+        zIndex: 1000,
         padding: 16,
       }}
     >
@@ -125,10 +116,9 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
           padding: 28,
           width: "100%",
           maxWidth: 400,
-          boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
+          boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
         }}
       >
-        {/* Header */}
         <div
           style={{
             display: "flex",
@@ -164,34 +154,33 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
               background: "none",
               border: "none",
               color: "var(--text-muted)",
-              fontSize: 22,
+              fontSize: 24,
               cursor: "pointer",
               lineHeight: 1,
+              padding: "0 4px",
             }}
           >
             ×
           </button>
         </div>
 
-        {/* Wallet list */}
         {wallets.length > 0 ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {wallets.map((wallet) => (
+            {wallets.map((w) => (
               <button
-                key={wallet.info.uuid}
-                onClick={() => handleConnect(wallet)}
+                key={w.info.uuid}
+                onClick={() => handleConnect(w)}
                 disabled={!!connecting}
                 style={{
                   display: "flex",
                   alignItems: "center",
                   gap: 14,
-                  padding: "12px 16px",
+                  padding: "13px 16px",
                   background: "var(--bg-elevated)",
                   border: "1px solid var(--border)",
                   borderRadius: 12,
                   cursor: connecting ? "not-allowed" : "pointer",
-                  opacity:
-                    connecting && connecting !== wallet.info.uuid ? 0.5 : 1,
+                  opacity: connecting && connecting !== w.info.uuid ? 0.4 : 1,
                   transition: "border-color 0.15s",
                   textAlign: "left",
                   width: "100%",
@@ -204,38 +193,38 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
                   e.currentTarget.style.borderColor = "var(--border)";
                 }}
               >
-                {wallet.info.icon ? (
+                {w.info.icon ? (
                   <img
-                    src={wallet.info.icon}
-                    alt={wallet.info.name}
-                    style={{ width: 36, height: 36, borderRadius: 8 }}
+                    src={w.info.icon}
+                    alt={w.info.name}
+                    style={{ width: 38, height: 38, borderRadius: 8 }}
                   />
                 ) : (
                   <div
                     style={{
-                      width: 36,
-                      height: 36,
+                      width: 38,
+                      height: 38,
                       borderRadius: 8,
                       background: "var(--bg)",
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      fontSize: 20,
+                      fontSize: 22,
                     }}
                   >
-                    {WALLET_EMOJI[wallet.info.name] || "👛"}
+                    {EMOJI[w.info.name] || "👛"}
                   </div>
                 )}
                 <div style={{ flex: 1 }}>
                   <div
                     style={{
-                      fontSize: "0.85rem",
+                      fontSize: "0.9rem",
                       fontWeight: 600,
                       color: "var(--text-primary)",
                       fontFamily: "Syne, sans-serif",
                     }}
                   >
-                    {wallet.info.name}
+                    {w.info.name}
                   </div>
                   <div
                     style={{
@@ -244,30 +233,31 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
                       marginTop: 2,
                     }}
                   >
-                    {wallet.info.rdns !== "legacy"
-                      ? wallet.info.rdns
-                      : "Detected"}
+                    {w.info.rdns !== "legacy" ? w.info.rdns : "Detected"}
                   </div>
                 </div>
-                {connecting === wallet.info.uuid ? (
-                  <span style={{ fontSize: 13, color: "var(--gold)" }}>
-                    connecting…
-                  </span>
-                ) : (
-                  <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                    →
-                  </span>
-                )}
+                <span
+                  style={{
+                    fontSize: 13,
+                    color:
+                      connecting === w.info.uuid
+                        ? "var(--gold)"
+                        : "var(--text-muted)",
+                    minWidth: 70,
+                    textAlign: "right",
+                  }}
+                >
+                  {connecting === w.info.uuid ? "connecting…" : "→"}
+                </span>
               </button>
             ))}
           </div>
         ) : (
-          /* No wallet detected */
-          <div style={{ textAlign: "center", padding: "24px 0" }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>👛</div>
+          <div style={{ textAlign: "center", padding: "28px 0" }}>
+            <div style={{ fontSize: 44, marginBottom: 12 }}>👛</div>
             <div
               style={{
-                fontSize: "0.85rem",
+                fontSize: "0.9rem",
                 fontWeight: 600,
                 color: "var(--text-primary)",
                 marginBottom: 6,
@@ -277,12 +267,12 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
             </div>
             <div
               style={{
-                fontSize: "0.72rem",
+                fontSize: "0.73rem",
                 color: "var(--text-secondary)",
                 marginBottom: 20,
               }}
             >
-              Install a browser wallet extension to get started
+              Install a browser wallet extension to continue
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {[
@@ -303,23 +293,19 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
                     display: "flex",
                     alignItems: "center",
                     gap: 10,
-                    padding: "10px 14px",
+                    padding: "11px 14px",
                     background: "var(--bg-elevated)",
                     border: "1px solid var(--border)",
                     borderRadius: 10,
                     color: "var(--text-primary)",
                     textDecoration: "none",
-                    fontSize: "0.8rem",
+                    fontSize: "0.82rem",
                   }}
                 >
-                  <span style={{ fontSize: 20 }}>{w.emoji}</span>
+                  <span style={{ fontSize: 22 }}>{w.emoji}</span>
                   <span>Install {w.name}</span>
                   <span
-                    style={{
-                      marginLeft: "auto",
-                      fontSize: 12,
-                      color: "var(--text-muted)",
-                    }}
+                    style={{ marginLeft: "auto", color: "var(--text-muted)" }}
                   >
                     ↗
                   </span>
@@ -333,7 +319,7 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
           <div
             style={{
               marginTop: 14,
-              padding: "8px 12px",
+              padding: "9px 13px",
               background: "rgba(239,68,68,0.1)",
               border: "1px solid rgba(239,68,68,0.3)",
               borderRadius: 8,
