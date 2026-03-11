@@ -1,54 +1,71 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
-// EIP-6963 wallet discovery — detects ALL injected wallets automatically
+// Detect wallets ONCE globally — not inside the modal component
+// This avoids the closure/remount issue where detected[] resets each time modal opens
+let _cachedWallets = [];
+let _listeners = new Set();
+
+function notifyListeners() {
+  _listeners.forEach((fn) => fn([..._cachedWallets]));
+}
+
+function initWalletDetection() {
+  if (typeof window === "undefined") return;
+  if (window.__walletDetectionInit) return;
+  window.__walletDetectionInit = true;
+
+  // EIP-6963: modern wallets announce themselves
+  window.addEventListener("eip6963:announceProvider", (event) => {
+    const { info, provider } = event.detail;
+    if (!_cachedWallets.find((w) => w.info.uuid === info.uuid)) {
+      _cachedWallets.push({ info, provider });
+      notifyListeners();
+    }
+  });
+
+  window.dispatchEvent(new Event("eip6963:requestProvider"));
+
+  // Legacy fallback after 300ms — gives EIP-6963 wallets time to announce first
+  setTimeout(() => {
+    if (
+      window.ethereum &&
+      !_cachedWallets.find((w) => w.info.uuid === "legacy")
+    ) {
+      const name = window.ethereum.isRabby
+        ? "Rabby"
+        : window.ethereum.isCoinbaseWallet
+          ? "Coinbase Wallet"
+          : window.ethereum.isBraveWallet
+            ? "Brave Wallet"
+            : window.ethereum.isMetaMask
+              ? "MetaMask"
+              : "Browser Wallet";
+      _cachedWallets.push({
+        info: { name, icon: null, uuid: "legacy", rdns: "legacy" },
+        provider: window.ethereum,
+      });
+      notifyListeners();
+    }
+  }, 300);
+}
+
 function useDetectedWallets() {
-  const [wallets, setWallets] = useState([]);
+  const [wallets, setWallets] = useState(() => [..._cachedWallets]);
 
   useEffect(() => {
-    const detected = [];
-
-    // Listen for EIP-6963 announcements
-    const onAnnounce = (event) => {
-      const { info, provider } = event.detail;
-      if (!detected.find((w) => w.info.uuid === info.uuid)) {
-        detected.push({ info, provider });
-        setWallets([...detected]);
-      }
-    };
-
-    window.addEventListener("eip6963:announceProvider", onAnnounce);
-    // Request all wallets to announce themselves
-    window.dispatchEvent(new Event("eip6963:requestProvider"));
-
-    // Also add legacy window.ethereum wallets as fallback
-    setTimeout(() => {
-      if (detected.length === 0 && window.ethereum) {
-        const name = window.ethereum.isRabby
-          ? "Rabby"
-          : window.ethereum.isCoinbaseWallet
-            ? "Coinbase Wallet"
-            : window.ethereum.isBraveWallet
-              ? "Brave Wallet"
-              : window.ethereum.isMetaMask
-                ? "MetaMask"
-                : "Browser Wallet";
-        detected.push({
-          info: { name, icon: null, uuid: "legacy", rdns: "legacy" },
-          provider: window.ethereum,
-        });
-        setWallets([...detected]);
-      }
-    }, 100);
-
-    return () =>
-      window.removeEventListener("eip6963:announceProvider", onAnnounce);
+    initWalletDetection();
+    // Subscribe to updates
+    _listeners.add(setWallets);
+    // Immediately sync in case wallets were detected before this component mounted
+    setWallets([..._cachedWallets]);
+    return () => _listeners.delete(setWallets);
   }, []);
 
   return wallets;
 }
 
-const WALLET_ICONS = {
+const WALLET_EMOJI = {
   MetaMask: "🦊",
   Rabby: "🐰",
   "Coinbase Wallet": "🔵",
@@ -59,39 +76,15 @@ const WALLET_ICONS = {
   "OKX Wallet": "⭕",
 };
 
-function WalletIcon({ info }) {
-  if (info.icon) {
-    return (
-      <img
-        src={info.icon}
-        alt={info.name}
-        style={{ width: 36, height: 36, borderRadius: 8 }}
-      />
-    );
-  }
-  const emoji = WALLET_ICONS[info.name] || "👛";
-  return (
-    <div
-      style={{
-        width: 36,
-        height: 36,
-        borderRadius: 8,
-        background: "var(--bg-elevated)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        fontSize: 20,
-      }}
-    >
-      {emoji}
-    </div>
-  );
-}
-
 export default function WalletModal({ isOpen, onClose, onConnect }) {
   const wallets = useDetectedWallets();
   const [connecting, setConnecting] = useState(null);
   const [error, setError] = useState("");
+
+  // Reset error when modal opens
+  useEffect(() => {
+    if (isOpen) setError("");
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -102,7 +95,7 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
       await onConnect(wallet.provider);
       onClose();
     } catch (err) {
-      setError(err.message?.slice(0, 80) || "Connection failed");
+      setError(err.message?.slice(0, 100) || "Connection failed");
     } finally {
       setConnecting(null);
     }
@@ -110,6 +103,7 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
 
   return (
     <div
+      onClick={onClose}
       style={{
         position: "fixed",
         inset: 0,
@@ -121,9 +115,9 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
         zIndex: 500,
         padding: 16,
       }}
-      onClick={onClose}
     >
       <div
+        onClick={(e) => e.stopPropagation()}
         style={{
           background: "var(--bg-card)",
           border: "1px solid var(--border-bright)",
@@ -132,9 +126,7 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
           width: "100%",
           maxWidth: 400,
           boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
-          animation: "modal-in 0.2s ease",
         }}
-        onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div
@@ -172,7 +164,7 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
               background: "none",
               border: "none",
               color: "var(--text-muted)",
-              fontSize: 20,
+              fontSize: 22,
               cursor: "pointer",
               lineHeight: 1,
             }}
@@ -200,22 +192,40 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
                   cursor: connecting ? "not-allowed" : "pointer",
                   opacity:
                     connecting && connecting !== wallet.info.uuid ? 0.5 : 1,
-                  transition: "all 0.15s",
+                  transition: "border-color 0.15s",
                   textAlign: "left",
                   width: "100%",
                 }}
                 onMouseEnter={(e) => {
-                  if (!connecting) {
+                  if (!connecting)
                     e.currentTarget.style.borderColor = "var(--gold)";
-                    e.currentTarget.style.background = "var(--bg-card)";
-                  }
                 }}
                 onMouseLeave={(e) => {
                   e.currentTarget.style.borderColor = "var(--border)";
-                  e.currentTarget.style.background = "var(--bg-elevated)";
                 }}
               >
-                <WalletIcon info={wallet.info} />
+                {wallet.info.icon ? (
+                  <img
+                    src={wallet.info.icon}
+                    alt={wallet.info.name}
+                    style={{ width: 36, height: 36, borderRadius: 8 }}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 8,
+                      background: "var(--bg)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 20,
+                    }}
+                  >
+                    {WALLET_EMOJI[wallet.info.name] || "👛"}
+                  </div>
+                )}
                 <div style={{ flex: 1 }}>
                   <div
                     style={{
@@ -240,9 +250,11 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
                   </div>
                 </div>
                 {connecting === wallet.info.uuid ? (
-                  <span className="spinner" style={{ color: "var(--gold)" }} />
+                  <span style={{ fontSize: 13, color: "var(--gold)" }}>
+                    connecting…
+                  </span>
                 ) : (
-                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
                     →
                   </span>
                 )}
@@ -250,7 +262,7 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
             ))}
           </div>
         ) : (
-          // No wallet detected
+          /* No wallet detected */
           <div style={{ textAlign: "center", padding: "24px 0" }}>
             <div style={{ fontSize: 40, marginBottom: 12 }}>👛</div>
             <div
@@ -323,17 +335,16 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
               marginTop: 14,
               padding: "8px 12px",
               background: "rgba(239,68,68,0.1)",
-              border: "1px solid rgba(239,68,68,0.25)",
+              border: "1px solid rgba(239,68,68,0.3)",
               borderRadius: 8,
-              fontSize: "0.72rem",
-              color: "var(--red)",
+              fontSize: "0.75rem",
+              color: "#f87171",
             }}
           >
             ⚠ {error}
           </div>
         )}
 
-        {/* Footer note */}
         <div
           style={{
             marginTop: 16,
@@ -342,8 +353,7 @@ export default function WalletModal({ isOpen, onClose, onConnect }) {
             textAlign: "center",
           }}
         >
-          By connecting, you agree to interact with the TimelockedVault smart
-          contract on Sepolia. Non-custodial — we never hold your keys.
+          Non-custodial — we never hold your keys.
         </div>
       </div>
     </div>

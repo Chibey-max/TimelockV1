@@ -93,7 +93,7 @@ export default function Header({ wallet }) {
           </div>
         )}
 
-        {wallet.error && !wallet.isWrongNet && (
+        {wallet.error && (
           <div
             style={{
               background: "#450a0a",

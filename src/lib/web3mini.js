@@ -1,7 +1,7 @@
 /**
  * web3mini.js — Zero-dependency Web3 helper.
- * Supports ANY EVM wallet via window.__activeProvider.
- * Uses a direct RPC for eth_call/estimateGas to bypass wallet RPC issues.
+ * Uses window.__activeProvider (set by useWallet) so ANY wallet works.
+ * Read calls go via direct fetch() to Sepolia RPC — bypasses wallet RPC quirks.
  * Selectors verified: keccak256("transfer(address,uint256)") = a9059cbb ✅
  */
 
@@ -16,23 +16,23 @@ const SEL = {
   getUnlockedBalance: "129de5bf",
 };
 
-// Reliable public Sepolia RPCs — tried in order until one works
-// These are used ONLY for read calls and dry-runs, NOT for signing
+// Reliable public Sepolia RPCs — tried in order until one responds
 const SEPOLIA_RPCS = [
   "https://rpc.sepolia.org",
   "https://ethereum-sepolia-rpc.publicnode.com",
   "https://sepolia.drpc.org",
 ];
 
+// Use whichever wallet the user connected with
 function prov() {
   return window.__activeProvider || window.ethereum;
 }
 
-// ── Direct RPC fetch (bypasses wallet RPC entirely for reads) ──
+// ── Direct RPC fetch for reads — bypasses wallet RPC entirely ──
 async function directRpc(method, params = []) {
-  for (const rpcUrl of SEPOLIA_RPCS) {
+  for (const url of SEPOLIA_RPCS) {
     try {
-      const res = await fetch(rpcUrl, {
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
@@ -42,14 +42,13 @@ async function directRpc(method, params = []) {
         throw new Error(json.error.message || JSON.stringify(json.error));
       return json.result;
     } catch (e) {
-      console.warn(`RPC ${rpcUrl} failed:`, e.message);
-      // Try next RPC
+      console.warn(`RPC ${url} failed:`, e.message);
     }
   }
   throw new Error("All Sepolia RPC endpoints failed");
 }
 
-// ── Wallet RPC (used only for sending signed transactions) ──
+// ── Wallet RPC — only for signing/sending ──
 const walletRpc = (method, params = []) => prov().request({ method, params });
 
 // ── ABI encoding ──
@@ -110,9 +109,7 @@ function extractRevertReason(err) {
   return null;
 }
 
-// ── Dry-run via direct RPC to catch reverts before sending ──
-// This uses our own RPC — NOT the wallet RPC — so it's not affected
-// by the wallet's gas price estimation bugs on Vercel/production
+// ── Dry-run via direct RPC to catch reverts before wasting gas ──
 async function dryRun(from, to, sel, params, value = "0x0") {
   try {
     await directRpc("eth_call", [
@@ -122,14 +119,10 @@ async function dryRun(from, to, sel, params, value = "0x0") {
   } catch (err) {
     const reason = extractRevertReason(err);
     if (reason) throw new Error(reason);
-    // Non-revert failure — ignore, let the actual sendTransaction handle it
   }
 }
 
-// ── Send transaction — NO gas field, let wallet handle it natively ──
-// Removing the gas field entirely means the wallet uses its own estimation
-// which is correct for the current network conditions. The dry-run above
-// already verified the tx won't revert, so native estimation is safe.
+// ── Send — no gas field, let wallet estimate natively ──
 async function sendTx(from, to, sel, params = "", value = "0x0") {
   await dryRun(from, to, sel, params, value);
   return walletRpc("eth_sendTransaction", [
@@ -138,8 +131,7 @@ async function sendTx(from, to, sel, params = "", value = "0x0") {
       to,
       data: "0x" + sel + params,
       value,
-      // No gas field — wallet estimates natively from its own RPC
-      // This is the most reliable approach across all wallets and networks
+      // No gas field — wallet uses its own native estimation (most reliable)
     },
   ]);
 }
@@ -149,14 +141,10 @@ export const requestAccounts = () => walletRpc("eth_requestAccounts");
 export const getAccounts = () => walletRpc("eth_accounts");
 export const getChainId = async () =>
   parseInt(await walletRpc("eth_chainId"), 16);
-export const getBlockNumber = async () => {
-  const r = await directRpc("eth_blockNumber", []);
-  return parseInt(r, 16);
-};
-export const getGasPrice = async () => {
-  const r = await directRpc("eth_gasPrice", []);
-  return BigInt(r);
-};
+export const getBlockNumber = async () =>
+  parseInt(await directRpc("eth_blockNumber", []), 16);
+export const getGasPrice = async () =>
+  BigInt(await directRpc("eth_gasPrice", []));
 
 // ── Network switching ──
 export async function switchToSepolia() {
@@ -177,13 +165,13 @@ export async function switchToSepolia() {
   }
 }
 
-// ── Wait for confirmation (via direct RPC, faster than wallet polling) ──
-export async function waitForReceipt(txHash, maxAttempts = 60) {
+// ── Wait for confirmation via direct RPC ──
+export async function waitForReceipt(txHash, maxAttempts = 40) {
   for (let i = 0; i < maxAttempts; i++) {
-    await new Promise((r) => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, 1500));
     const receipt = await directRpc("eth_getTransactionReceipt", [txHash]);
     if (receipt) {
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, 1000));
       return receipt;
     }
   }
@@ -207,7 +195,7 @@ export async function withdrawAll(from, contract) {
   return sendTx(from, contract, SEL.withdrawAll, "");
 }
 
-// ── Reads (via direct RPC — not wallet) ──
+// ── Reads — all via direct RPC ──
 async function ethCall(to, sel, params = "") {
   return directRpc("eth_call", [{ to, data: "0x" + sel + params }, "latest"]);
 }
